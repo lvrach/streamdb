@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <title>tailbin ~ stream</title>
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
+    <style>
+        body {
+            background: #1e1e1e;
+            color: rgba(214,214,214,1);
+            margin-left: 10px;
+        }
+        .grep-box {
+            font-size: 19px;
+            font-family: "Lucida Console", Monaco, monospace;
+
+        }
+        #grep-input {
+            background: #1e1e1e;
+            color: rgba(214,214,214,1);
+            width: 100px;
+            height: 23px;
+            font-size: 19px;
+            border-left: 0px;
+            border-right: 0px;
+            border-top: 0px;
+            border-bottom-width: 1px;
+        }
+        p {
+            margin: 3px;
+            font-family: "Lucida Console", Monaco, monospace;
+            font-size: 17px;
+            min-height: 20px;
+        }
+        #streaming {
+            width: 100%;
+            text-align: center;
+        }
+        .greped p {
+            display: none;
+        }
+        .greped p.contain {
+            display: block;
+        }
+        .greped p.contain span.hl {
+            background: #7e7e7e;
+            border-radius: 5px;
+        }
+    </style>
+    <body>
+        <h1> Dashboard </h1>
+        <br/>
+        <div id="counters">
+        </div>
+    </body>
+    <script type="text/javascript">
+    
+        var tail = new EventSource("/query/test?field=clicks&field=loads&field=seconds");
+        var counters = document.getElementById("counters");
+
+        tail.onmessage = function(e) {
+            counters.innerHTML = e.data;
+        }
+
+    </script>
+</html>
