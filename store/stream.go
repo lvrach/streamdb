@@ -2,58 +2,50 @@ package store
 
 import (
 	"fmt"
-	"log"
-	"math"
+	"github.com/boltdb/bolt"
 )
 
-type Row map[string]interface{}
-
-func (row Row) Number(field string) (float64, error) {
-
-	value, ok := row[field]
-	if !ok {
-		return math.NaN(), fmt.Errorf("field %s not defined", field)
-	}
-
-	switch i := value.(type) {
-	case float64:
-		return i, nil
-	default:
-		return math.NaN(), fmt.Errorf("%v %v not an number", i, value)
-	}
-}
-
-type DB struct {
-	streams map[string]*stream
-}
-
 type stream struct {
-	list    []Row
+	db      *bolt.DB
+	bucket  []byte
 	observers []Observer
 }
 
-func (db *DB) Stream(streamId string) *stream {
-	_, ok := db.streams[streamId]
+func (s *stream) Push(rows []Row) error {
 
-	if !ok {
-		log.Println("Creating new stream", streamId)
-		if db.streams == nil {
-			db.streams = make(map[string]*stream)
-		}
-		db.streams[streamId] = new(stream)
-	}
-	return db.streams[streamId]
-}
+	//FIXME
+	row := rows[0]
 
-func (s *stream) Push(data []Row) {
-	s.list = append(s.list, data...)
+    err := s.db.Update(func(tx *bolt.Tx) error {
+        // Retrieve the users bucket.
+        // This should be created when the DB is first opened.
+        b := tx.Bucket(s.bucket)
+
+        row.id, _ = b.NextSequence()
+
+
+        key, value, err := row.EncodeBolt()
+        if (err != nil) {
+        	return err
+        }
+
+        fmt.Println("write", key, row.data);
+
+        return b.Put(key, value)
+    })
+
+    if err != nil {
+    	return err
+    }
 
 	for _, observ := range s.observers {
 		select{
-	    	case observ <- data:
+	    	case observ <- rows:
 	    	default: continue
 	    }
 	}
+
+	return nil
 }
 
 type Observer chan []Row
@@ -61,23 +53,57 @@ type Observer chan []Row
 type Cursor struct { 
 	ch Observer
 	pstream *stream
+	closed bool
 }
 
-
-func (s *stream) Cursor() (Cursor) {
-	ch := make(chan []Row, 100)
-	ch <- s.list
-	s.observers = append(s.observers, ch)
-
-	return Cursor{ch, s}
+type Iterator interface {
+	Data(row Row)
+	Flush()
 }
-func (c Cursor) Data() (Observer) {
-	return c.ch;
+
+func (s *stream) Iteratorate(iter Iterator) (*Cursor) {
+	ch := make(chan []Row, 1000)
+	c := &Cursor{ch, s, false}
+
+	s.db.View(func(tx *bolt.Tx) error {
+	    b := tx.Bucket(s.bucket)
+	    bc := b.Cursor()
+
+	    for k, v := bc.First(); k != nil; k, v = bc.Next() {
+	    	row := Row{}
+	    	row.DecodeBolt(k, v)
+	    	
+	    	if c.closed == true {
+   			 	fmt.Println("Stop on going query on",s.bucket)
+   			 	return nil
+	    	}
+
+	    	iter.Data(row)
+	    }
+
+	    iter.Flush()
+
+	    return nil
+	})
+	s.observers = append(s.observers, c.ch)
+
+	go func () {
+		for rows := range c.ch {
+			for _, row := range rows {
+				iter.Data(row)
+			}
+			iter.Flush()
+		}
+	}()
+
+	return c;
 }
 
 func (c Cursor) Close() error {
 
 	s := c.pstream
+
+	c.closed = true
 
 	for i, ch := range s.observers {
 		if ch == c.ch {

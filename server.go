@@ -9,15 +9,24 @@ import (
 	"strings"
 )
 
-var db store.DB
+var db *store.DB
 
 func main() {
+
+	db = store.Open("default")
+	defer db.Close()
 
 	http.HandleFunc("/stream/", streamHandler)
 	http.HandleFunc("/query/", queryHandler)
 	http.Handle("/", http.FileServer(http.Dir("./static/example/")))
 
-	http.ListenAndServe(":8080", nil)
+	fmt.Println("listening at 8080")
+
+	err := http.ListenAndServe(":8080", nil)
+
+	if err != nil {
+		panic(err)
+	}
 }
 
 func queryHandler(w http.ResponseWriter, r *http.Request) {
@@ -36,47 +45,32 @@ func queryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	header := w.Header()
 
-	cursor := db.Stream(streamId).Cursor()
-	defer cursor.Close()
+	header.Set("Content-Type", "text/event-stream")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("Connection", "keep-alive")
+	header.Set("Access-Control-Allow-Origin", "*")
 
-	close := w.(http.CloseNotifier).CloseNotify()
-
-	sum := make(map[string]float64)
-
-	for {
-
-		select {
-		case rows := <-cursor.Data():
-			// Server Sent Events compatible
-
-			for _, row := range rows {
-				for _, field := range fields {
-					num, err := row.Number(field)
-					if err != nil {
-						continue
-					}
-					sum[field] += num
-				}
-			}
-			result, err := json.Marshal(sum)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			fmt.Fprintf(w, "data: %s\n\n", string(result))
-
-			flusher.Flush()
-		case <-close:
-			log.Println("close query stream for", streamId)
+	sum := NewSum(fields, func(sum interface{}) {
+		result, err := json.Marshal(sum)
+		if err != nil {
+			log.Println(err)
 			return
 		}
+		fmt.Fprintf(w, "data: %s\n\n", string(result))
 
-	}
+		flusher.Flush()
+
+	})
+
+	cursor := db.Stream(streamId).Iteratorate(sum)
+
+	defer cursor.Close()
+
+	<-w.(http.CloseNotifier).CloseNotify()
+	log.Println("close query stream for", streamId)
+	return
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
@@ -84,13 +78,52 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 
 	streamId := path[2]
 
-	var data []store.Row
+	var row []store.Row
 	decoder := json.NewDecoder(r.Body)
 
-	if err := decoder.Decode(&data); err != nil {
+	if err := decoder.Decode(&row); err != nil {
 		log.Println(err)
 		return
 	}
 	fmt.Fprintf(w, "OK!")
-	db.Stream(streamId).Push(data)
+	err := db.Stream(streamId).Push(row)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
+type Sum struct {
+	fields []string
+	onData func(interface{})
+	result map[string]float64
+}
+
+func NewSum(fields []string, onData func(interface{})) (s *Sum) {
+
+	result := make(map[string]float64)
+
+	for _, field := range fields {
+		result[field] = 0
+	}
+
+	return &Sum{
+		fields,
+		onData,
+		result,
+	}
+
+}
+
+func (s *Sum) Data(row store.Row) {
+	for _, field := range s.fields {
+		num, err := row.Number(field)
+		if err != nil {
+			continue
+		}
+		s.result[field] += num
+	}
+}
+
+func (s *Sum) Flush() {
+	s.onData(s.result)
 }
